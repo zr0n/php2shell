@@ -301,7 +301,13 @@ def run_poc(args, off, cmd):
     if not os.path.exists(POC_PY):
         return warn("poc.py not found — clone reference repos first")
     a = [sys.executable, POC_PY, "-u", args.target, "-c", cmd,
-         "--no-auto-offsets", "--proof-file", ""]
+         "--no-auto-offsets"]
+    if args.proof_file:
+        a += ["--proof-file", args.proof_file]
+    else:
+        a += ["--proof-file", ""]
+        warn("proof polling disabled — command may execute blind; "
+             "use --proof-file <host-path> (lab: lab/out/p) to confirm")
     if off:
         a += ["--zif-offset", hex(off[0]), "--dtor-offset", hex(off[1])]
         if off[2]:
@@ -361,6 +367,9 @@ def main():
     ap.add_argument("--engine", choices=("auto", "poc", "3em0", "v2"),
                     default="auto")
     ap.add_argument("--retries", type=int, default=0)
+    ap.add_argument("--proof-file", default="",
+                    help="host path polled for the proof after stage 3 "
+                         "(lab: lab/out/p with -c 'id>/out/p')")
     ap.add_argument("--force", action="store_true",
                     help="skip gates (passes --force/--no-gate to the engine)")
     ap.add_argument("--allow-unsupported", action="store_true",

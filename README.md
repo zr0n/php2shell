@@ -50,8 +50,8 @@ affected.
 ## Usage
 
 ```bash
-# full chain, one command
-python3 php2shell.py -u http://TARGET/index.php -c id
+# full chain, one command (lab: proof lands in lab/out/p)
+python3 php2shell.py -u http://TARGET/index.php -c 'id>/out/p' --proof-file lab/out/p
 
 # passive / active recon only
 python3 php2shell.py -u http://TARGET/index.php --recon-only

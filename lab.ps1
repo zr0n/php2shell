@@ -1,6 +1,16 @@
 # lab.ps1 — local lab (Windows): vulnerable PHP 8.4.26 on :8088, patched 8.5.12 on :8089
 # Mirrors lab_setup.sh. Needs Docker Desktop running (~1.2 GB pull).
 $ErrorActionPreference = "Stop"
+
+# Friendly pre-check: Docker Desktop must be running before touching anything.
+docker info *> $null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[!] Docker engine is not running." -ForegroundColor Yellow
+    Write-Host "    Start Docker Desktop from the Start menu, wait for 'Engine running',"
+    Write-Host "    then re-run .\lab.ps1"
+    exit 1
+}
+
 $HERE = Split-Path -Parent $MyInvocation.MyCommand.Path
 $D = Join-Path $HERE "lab"
 New-Item -ItemType Directory -Force -Path (Join-Path $D "out"), (Join-Path $D "www") | Out-Null

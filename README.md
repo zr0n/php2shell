@@ -1,9 +1,10 @@
-# php2shell
+# php2shell (reverse optimized)
 
 Automated **PHP2Shell** exploit — CVE-2026-109618 / CVE-2026-109619,
 unauthenticated RCE in the PHP engine via `session.upload_progress`
 heap corruption (CVSS 4.0: 9.2). One command from a single URL:
-recon → preflight gates → offset resolution → engine run.
+recon → preflight gates → offset resolution → engine run → interactive
+reverse shell handed back to the client.
 
 Developed by [@luizfernandoziron](https://github.com/luizfernandoziron) /
 [@zr0n](https://github.com/zr0n) — https://instagram.com/luizfernandoziron

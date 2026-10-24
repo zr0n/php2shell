@@ -1,13 +1,12 @@
 # lab.ps1 — local lab (Windows): vulnerable PHP 8.4.26 on :8088, patched 8.5.12 on :8089
 # Mirrors lab_setup.sh. Needs Docker Desktop running (~1.2 GB pull).
-$ErrorActionPreference = "Stop"
+# NOTE: no $ErrorActionPreference="Stop" here — native stderr from docker
+# (e.g. "No such container") would otherwise throw NativeCommandError in PS 5.1.
 
 # Friendly pre-check: Docker Desktop must be running before touching anything.
-# (native stderr would otherwise throw under ErrorActionPreference=Stop)
 $ErrorActionPreference = "Continue"
 docker info *> $null
 $engineUp = ($LASTEXITCODE -eq 0)
-$ErrorActionPreference = "Stop"
 if (-not $engineUp) {
     Write-Host "[!] Docker engine is not running." -ForegroundColor Yellow
     Write-Host "    Start Docker Desktop from the Start menu, wait for 'Engine running',"
@@ -57,7 +56,10 @@ function Start-Lab([string]$name, [string]$image, [int]$port) {
         -v "$(Join-Path $D 'apache.conf'):/etc/apache2/conf-enabled/zz-php2shell.conf:ro" `
         -v "$(Join-Path $D 'www'):/var/www/html:ro" `
         -v "$(Join-Path $D 'out'):/out" `
-        $image | Out-Null
+        $image 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[!] falhou ao subir $name ($image)" -ForegroundColor Yellow
+    }
 }
 
 Start-Lab "php2shell-target"  "php:8.4.26-apache" 8088

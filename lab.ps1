@@ -3,8 +3,12 @@
 $ErrorActionPreference = "Stop"
 
 # Friendly pre-check: Docker Desktop must be running before touching anything.
+# (native stderr would otherwise throw under ErrorActionPreference=Stop)
+$ErrorActionPreference = "Continue"
 docker info *> $null
-if ($LASTEXITCODE -ne 0) {
+$engineUp = ($LASTEXITCODE -eq 0)
+$ErrorActionPreference = "Stop"
+if (-not $engineUp) {
     Write-Host "[!] Docker engine is not running." -ForegroundColor Yellow
     Write-Host "    Start Docker Desktop from the Start menu, wait for 'Engine running',"
     Write-Host "    then re-run .\lab.ps1"
